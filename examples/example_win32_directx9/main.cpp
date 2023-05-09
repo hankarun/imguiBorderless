@@ -7,6 +7,7 @@
 #include "imgui_impl_win32.h"
 #include <d3d9.h>
 #include <tchar.h>
+#include <iostream>
 
 // Data
 static LPDIRECT3D9              g_pD3D = nullptr;
@@ -19,14 +20,92 @@ void CleanupDeviceD3D();
 void ResetDevice();
 LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
+bool fullscreen_ = false;
+bool maximized = false;
+int style = 0;
+int ex_style = 0;
+RECT window_rect;
+
+
+
+struct Vector2
+{
+    int x;
+    int y;
+};
+
+
+struct Size
+{
+    int width;
+    int height;
+};
+
+Vector2 windowPos = { 100, 100 };
+Size windowSize = { 1280, 800 };
+int windowStyle = WS_POPUP | WS_SYSMENU;
+int imgui_cursor = 0;
+
+void SetFullscreenImpl(HWND hwnd_, bool fullscreen, bool for_metro) {
+    // Save current window state if not already fullscreen.
+    if (!fullscreen_) {
+        // Save current window information.  We force the window into restored mode
+        // before going fullscreen because Windows doesn't seem to hide the
+        // taskbar if the window is in the maximized state.
+        maximized = !!::IsZoomed(hwnd_);
+        if (maximized)
+            ::SendMessage(hwnd_, WM_SYSCOMMAND, SC_RESTORE, 0);
+        style = GetWindowLong(hwnd_, GWL_STYLE);
+        ex_style = GetWindowLong(hwnd_, GWL_EXSTYLE);
+        GetWindowRect(hwnd_, &window_rect);
+    }
+
+    fullscreen_ = fullscreen;
+
+    if (fullscreen_) {
+        // Set new window style and size.
+        SetWindowLong(hwnd_, GWL_STYLE, style & ~(WS_CAPTION | WS_THICKFRAME));
+        SetWindowLong(hwnd_, GWL_EXSTYLE, ex_style & ~(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE));
+
+        // On expand, if we're given a window_rect, grow to it, otherwise do
+        // not resize.
+        if (!for_metro) {
+            MONITORINFO monitor_info;
+            monitor_info.cbSize = sizeof(monitor_info);
+            GetMonitorInfo(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST),
+                &monitor_info);
+            RECT window_rect(monitor_info.rcMonitor);
+            SetWindowPos(hwnd_, NULL, 0, 0, 2560, 1080,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
+    }
+    else {
+        // Reset original window style and size.  The multiple window size/moves
+        // here are ugly, but if SetWindowPos() doesn't redraw, the taskbar won't be
+        // repainted.  Better-looking methods welcome.
+        SetWindowLong(hwnd_, GWL_STYLE, style);
+        SetWindowLong(hwnd_, GWL_EXSTYLE, ex_style);
+
+        if (!for_metro) {
+            // On restore, resize to the previous saved rect size.
+            RECT new_rect(window_rect);
+            SetWindowPos(hwnd_, NULL, windowPos.x, windowPos.y, windowSize.width, windowSize.height,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        }
+        if (maximized)
+            ::SendMessage(hwnd_, WM_SYSCOMMAND, SC_MAXIMIZE, 0);
+    }
+}
+
 // Main code
 int main(int, char**)
 {
+
     // Create application window
     //ImGui_ImplWin32_EnableDpiAwareness();
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"ImGui Example", nullptr };
     ::RegisterClassExW(&wc);
-    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"Dear ImGui DirectX9 Example", WS_OVERLAPPEDWINDOW, 100, 100, 1280, 800, nullptr, nullptr, wc.hInstance, nullptr);
+    HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"Dear ImGui DirectX9 Example", windowStyle, windowPos.x, windowPos.y, windowSize.width, windowSize.height, nullptr, nullptr, wc.hInstance, nullptr);
 
     // Initialize Direct3D
     if (!CreateDeviceD3D(hwnd))
@@ -84,12 +163,11 @@ int main(int, char**)
     //IM_ASSERT(font != nullptr);
 
     // Our state
-    bool show_demo_window = true;
-    bool show_another_window = false;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     // Main loop
     bool done = false;
+    bool taskBarHovering = false;
     while (!done)
     {
         // Poll and handle messages (inputs, window resize, etc.)
@@ -109,50 +187,77 @@ int main(int, char**)
         ImGui_ImplDX9_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
+        bool toggleFullscreen = false;
 
-        // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
-        if (show_demo_window)
-            ImGui::ShowDemoWindow(&show_demo_window);
-
-        // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
         {
-            static float f = 0.0f;
-            static int counter = 0;
+            static ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
 
-            ImGui::Begin("Hello, world!");                          // Create a window called "Hello, world!" and append into it.
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 8));
+            if (ImGui::BeginMainMenuBar())
+            {
+                ImGui::Text("Engine  ");
 
-            ImGui::Text("This is some useful text.");               // Display some text (you can use a format strings too)
-            ImGui::Checkbox("Demo Window", &show_demo_window);      // Edit bools storing our window open/close state
-            ImGui::Checkbox("Another Window", &show_another_window);
+                if (ImGui::BeginMenu("File"))
+                {
+                    ImGui::MenuItem("New");
+                    ImGui::MenuItem("Open");
+                    ImGui::MenuItem("Save");
+                    ImGui::MenuItem("Save As...");
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Quit"))
+                        done = true;
+                    ImGui::EndMenu();
+                }
 
-            ImGui::SliderFloat("float", &f, 0.0f, 1.0f);            // Edit 1 float using a slider from 0.0f to 1.0f
-            ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats representing a color
+                if (ImGui::BeginMenu("Help"))
+                {
+                    ImGui::EndMenu();
+                }
 
-            if (ImGui::Button("Button"))                            // Buttons return true when clicked (most widgets return true when edited/activated)
-                counter++;
-            ImGui::SameLine();
-            ImGui::Text("counter = %d", counter);
+                auto size = ImGui::GetContentRegionMax();
+                size.x = size.x - 55;
+                size.y = 0;
+                ImGui::SetCursorPos(size);
+                if (ImGui::Button("O", { 30, 30 }))
+                {
+                    toggleFullscreen = true;
+                }
+                size.x += 32;
+                ImGui::SetCursorPos(size);
+                if (ImGui::Button("X", { 30, 30 }))
+                {
+                    done = true;
+                }
+                if (ImGui::IsWindowHovered())
+                {
+                    taskBarHovering = true;
+                }
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && taskBarHovering)
+                    toggleFullscreen = true;
+                ImGui::EndMainMenuBar();
+            }
 
-            ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
+            ImGui::PopStyleVar();
+
+            const ImGuiViewport* viewport = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(viewport->WorkPos);
+            ImGui::SetNextWindowSize(viewport->WorkSize);
+
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+            ImGui::Begin("Main", 0, flags);
+            ImGui::PopStyleVar();
+            ImGui::DockSpace(ImGui::GetID("Dock"));
+            ImGui::ShowDemoWindow();
             ImGui::End();
         }
 
-        // 3. Show another simple window.
-        if (show_another_window)
-        {
-            ImGui::Begin("Another Window", &show_another_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-            ImGui::Text("Hello from another window!");
-            if (ImGui::Button("Close Me"))
-                show_another_window = false;
-            ImGui::End();
-        }
 
         // Rendering
         ImGui::EndFrame();
         g_pd3dDevice->SetRenderState(D3DRS_ZENABLE, FALSE);
         g_pd3dDevice->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
         g_pd3dDevice->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
-        D3DCOLOR clear_col_dx = D3DCOLOR_RGBA((int)(clear_color.x*clear_color.w*255.0f), (int)(clear_color.y*clear_color.w*255.0f), (int)(clear_color.z*clear_color.w*255.0f), (int)(clear_color.w*255.0f));
+        D3DCOLOR clear_col_dx = D3DCOLOR_RGBA((int)(clear_color.x * clear_color.w * 255.0f), (int)(clear_color.y * clear_color.w * 255.0f), (int)(clear_color.z * clear_color.w * 255.0f), (int)(clear_color.w * 255.0f));
         g_pd3dDevice->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, clear_col_dx, 1.0f, 0);
         if (g_pd3dDevice->BeginScene() >= 0)
         {
@@ -169,6 +274,60 @@ int main(int, char**)
         }
 
         HRESULT result = g_pd3dDevice->Present(nullptr, nullptr, nullptr, nullptr);
+
+        if (toggleFullscreen)
+            SetFullscreenImpl(hwnd, !fullscreen_, false);
+
+        if (taskBarHovering && ImGui::IsMouseDragging(ImGuiMouseButton_::ImGuiMouseButton_Left))
+        {
+            auto delta = ImGui::GetMouseDragDelta();
+            ImGui::ResetMouseDragDelta();
+
+            windowPos.x += delta.x;
+            windowPos.y += delta.y;
+
+            RECT rect = { (LONG)windowPos.x, (LONG)windowPos.y, (LONG)windowPos.x, (LONG)windowPos.y };
+            ::AdjustWindowRectEx(&rect, windowStyle, FALSE, 0);
+            ::SetWindowPos(hwnd, nullptr, rect.left, rect.top, 0, 0, SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+
+        if (taskBarHovering)
+        {
+            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+                taskBarHovering = false;
+        }
+
+        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+        auto mousePos = ImGui::GetMousePos();
+        imgui_cursor = ImGuiMouseCursor_Arrow;
+        if (abs(mousePos.x - viewport->Pos.x) < 6 && (mousePos.y > viewport->Pos.y && mousePos.y < (viewport->Pos.y + viewport->Size.y)))
+            imgui_cursor = ImGuiMouseCursor_ResizeEW;
+
+        if (abs(mousePos.x - (viewport->Pos.x + viewport->Size.x)) < 6 && (mousePos.y > viewport->Pos.y && mousePos.y < (viewport->Pos.y + viewport->Size.y)))
+            imgui_cursor = ImGuiMouseCursor_ResizeEW;
+
+        if (abs(mousePos.y - viewport->Pos.y) < 6 && (mousePos.x > viewport->Pos.x && mousePos.x < (viewport->Pos.x + viewport->Size.x)))
+            imgui_cursor = ImGuiMouseCursor_ResizeNS;
+
+        if (abs(mousePos.y - (viewport->Pos.y + viewport->Size.y)) < 6 && (mousePos.x > viewport->Pos.x && mousePos.x < (viewport->Pos.x + viewport->Size.x)))
+            imgui_cursor = ImGuiMouseCursor_ResizeNS;
+
+        LPTSTR win32_cursor = IDC_ARROW;
+        switch (imgui_cursor)
+        {
+        case ImGuiMouseCursor_Arrow:        win32_cursor = IDC_ARROW; break;
+        case ImGuiMouseCursor_TextInput:    win32_cursor = IDC_IBEAM; break;
+        case ImGuiMouseCursor_ResizeAll:    win32_cursor = IDC_SIZEALL; break;
+        case ImGuiMouseCursor_ResizeEW:     win32_cursor = IDC_SIZEWE; break;
+        case ImGuiMouseCursor_ResizeNS:     win32_cursor = IDC_SIZENS; break;
+        case ImGuiMouseCursor_ResizeNESW:   win32_cursor = IDC_SIZENESW; break;
+        case ImGuiMouseCursor_ResizeNWSE:   win32_cursor = IDC_SIZENWSE; break;
+        case ImGuiMouseCursor_Hand:         win32_cursor = IDC_HAND; break;
+        case ImGuiMouseCursor_NotAllowed:   win32_cursor = IDC_NO; break;
+        }
+        ::SetCursor(::LoadCursor(nullptr, win32_cursor));
+
 
         // Handle loss of D3D9 device
         if (result == D3DERR_DEVICELOST && g_pd3dDevice->TestCooperativeLevel() == D3DERR_DEVICENOTRESET)
