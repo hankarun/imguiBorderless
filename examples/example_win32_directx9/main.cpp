@@ -244,9 +244,9 @@ int main(int, char**)
             ImGui::SetNextWindowSize(viewport->WorkSize);
 
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-            ImGui::Begin("Main", 0, flags);
+            ImGui::Begin("Main", 0, flags | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBringToFrontOnFocus);
             ImGui::PopStyleVar();
-            ImGui::DockSpace(ImGui::GetID("Dock"));
+            ImGui::DockSpace(ImGui::GetID("Dock"), viewport->WorkSize);
             ImGui::ShowDemoWindow();
             ImGui::End();
         }
