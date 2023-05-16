@@ -617,6 +617,29 @@ IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARA
 
     switch (msg)
     {
+    case WM_NCCALCSIZE:
+        if (wParam)
+        {
+            /* Detect whether window is maximized or not. We don't need to change the resize border when win is
+            *  maximized because all resize borders are gone automatically */
+            WINDOWPLACEMENT wPos;
+            // GetWindowPlacement fail if this member is not set correctly.
+            wPos.length = sizeof(wPos);
+            GetWindowPlacement(hwnd, &wPos);
+            if (wPos.showCmd != SW_SHOWMAXIMIZED)
+            {
+                RECT borderThickness;
+                SetRectEmpty(&borderThickness);
+                AdjustWindowRectEx(&borderThickness,
+                    GetWindowLongPtr(hwnd, GWL_STYLE) & ~WS_CAPTION, FALSE, NULL);
+                borderThickness.left *= -1;
+                borderThickness.top *= -1;
+                NCCALCSIZE_PARAMS* sz = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
+                // Add 1 pixel to the top border to make the window resizable from the top border
+                sz->rgrc[0].top -= borderThickness.top;
+                return 0;
+            }
+        }break;
     case WM_MOUSEMOVE:
     case WM_NCMOUSEMOVE:
     {

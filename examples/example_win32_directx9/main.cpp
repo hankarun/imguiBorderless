@@ -43,7 +43,7 @@ struct Size
 
 Vector2 windowPos = { 100, 100 };
 Size windowSize = { 1280, 800 };
-int windowStyle = WS_POPUP | WS_SYSMENU;
+int windowStyle = WS_POPUP | WS_SYSMENU | WS_THICKFRAME;
 int imgui_cursor = 0;
 
 void SetFullscreenImpl(HWND hwnd_, bool fullscreen, bool for_metro) {
@@ -296,38 +296,6 @@ int main(int, char**)
             if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
                 taskBarHovering = false;
         }
-
-        const ImGuiViewport* viewport = ImGui::GetMainViewport();
-
-        auto mousePos = ImGui::GetMousePos();
-        imgui_cursor = ImGuiMouseCursor_Arrow;
-        if (abs(mousePos.x - viewport->Pos.x) < 6 && (mousePos.y > viewport->Pos.y && mousePos.y < (viewport->Pos.y + viewport->Size.y)))
-            imgui_cursor = ImGuiMouseCursor_ResizeEW;
-
-        if (abs(mousePos.x - (viewport->Pos.x + viewport->Size.x)) < 6 && (mousePos.y > viewport->Pos.y && mousePos.y < (viewport->Pos.y + viewport->Size.y)))
-            imgui_cursor = ImGuiMouseCursor_ResizeEW;
-
-        if (abs(mousePos.y - viewport->Pos.y) < 6 && (mousePos.x > viewport->Pos.x && mousePos.x < (viewport->Pos.x + viewport->Size.x)))
-            imgui_cursor = ImGuiMouseCursor_ResizeNS;
-
-        if (abs(mousePos.y - (viewport->Pos.y + viewport->Size.y)) < 6 && (mousePos.x > viewport->Pos.x && mousePos.x < (viewport->Pos.x + viewport->Size.x)))
-            imgui_cursor = ImGuiMouseCursor_ResizeNS;
-
-        LPTSTR win32_cursor = IDC_ARROW;
-        switch (imgui_cursor)
-        {
-        case ImGuiMouseCursor_Arrow:        win32_cursor = IDC_ARROW; break;
-        case ImGuiMouseCursor_TextInput:    win32_cursor = IDC_IBEAM; break;
-        case ImGuiMouseCursor_ResizeAll:    win32_cursor = IDC_SIZEALL; break;
-        case ImGuiMouseCursor_ResizeEW:     win32_cursor = IDC_SIZEWE; break;
-        case ImGuiMouseCursor_ResizeNS:     win32_cursor = IDC_SIZENS; break;
-        case ImGuiMouseCursor_ResizeNESW:   win32_cursor = IDC_SIZENESW; break;
-        case ImGuiMouseCursor_ResizeNWSE:   win32_cursor = IDC_SIZENWSE; break;
-        case ImGuiMouseCursor_Hand:         win32_cursor = IDC_HAND; break;
-        case ImGuiMouseCursor_NotAllowed:   win32_cursor = IDC_NO; break;
-        }
-        ::SetCursor(::LoadCursor(nullptr, win32_cursor));
-
 
         // Handle loss of D3D9 device
         if (result == D3DERR_DEVICELOST && g_pd3dDevice->TestCooperativeLevel() == D3DERR_DEVICENOTRESET)
