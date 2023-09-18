@@ -178,9 +178,11 @@ void EndMenubar()
     window->DC.MenuBarAppending = false;
 }
 
-void drawTitleBar(float& titlebarHeight_)
+const float titlebarHeight = 58.0f;
+
+
+void drawTitleBar()
 {
-    const float titlebarHeight = 58.0f;
     const bool isMaximized = fullscreen_;
     float titlebarVerticalOffset = isMaximized ? -6.0f : 0.0f;
     const ImVec2 windowPadding = ImGui::GetCurrentWindow()->WindowPadding;
@@ -339,8 +341,6 @@ void drawTitleBar(float& titlebarHeight_)
 
     ImGui::Spring(-1.0f, 18.0f);
     ImGui::EndHorizontal();
-
-    titlebarHeight_ = titlebarHeight;
 }
 
 // Main code
@@ -426,10 +426,12 @@ int main(int, char**)
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, fullscreen_ ? ImVec2(6.0f, 6.0f) : ImVec2(1.0f, 1.0f));
             ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
             ImGui::Begin("Main", 0, window_flags);
-            float titleBarHeight = 58;
             ImGui::PopStyleVar(3);
-            drawTitleBar(titleBarHeight);
-            ImGui::DockSpace(ImGui::GetID("Dock"));
+            drawTitleBar();
+            auto dockSize = viewport->WorkSize;
+            int statusBarHeight = 58;
+            dockSize.y -= statusBarHeight;
+            ImGui::DockSpace(ImGui::GetID("Dock"), dockSize);
             ImGui::ShowDemoWindow();
             ImGui::End();
         }
