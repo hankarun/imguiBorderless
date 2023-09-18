@@ -2,12 +2,17 @@
 // If you are new to Dear ImGui, read documentation from the docs/ folder + read the top of imgui.cpp.
 // Read online: https://github.com/ocornut/imgui/tree/master/docs
 
+#define WIN32_LEAN_AND_MEAN
+
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "imgui_impl_dx9.h"
 #include "imgui_impl_win32.h"
 #include <d3d9.h>
 #include <tchar.h>
 #include <iostream>
+
+#include <windowsx.h>
 
 // Data
 static LPDIRECT3D9              g_pD3D = nullptr;
@@ -30,8 +35,8 @@ RECT window_rect;
 
 struct Vector2
 {
-    int x;
-    int y;
+    int x = 0;
+    int y = 0;
 };
 
 
@@ -43,66 +48,304 @@ struct Size
 
 Vector2 windowPos = { 100, 100 };
 Size windowSize = { 1280, 800 };
-int windowStyle = WS_POPUP | WS_SYSMENU | WS_THICKFRAME;
+int windowStyle = WS_TILEDWINDOW;
 int imgui_cursor = 0;
 
-void SetFullscreenImpl(HWND hwnd_, bool fullscreen, bool for_metro) {
-    // Save current window state if not already fullscreen.
-    if (!fullscreen_) {
-        // Save current window information.  We force the window into restored mode
-        // before going fullscreen because Windows doesn't seem to hide the
-        // taskbar if the window is in the maximized state.
-        maximized = !!::IsZoomed(hwnd_);
-        if (maximized)
-            ::SendMessage(hwnd_, WM_SYSCOMMAND, SC_RESTORE, 0);
-        style = GetWindowLong(hwnd_, GWL_STYLE);
-        ex_style = GetWindowLong(hwnd_, GWL_EXSTYLE);
-        GetWindowRect(hwnd_, &window_rect);
-    }
+// Get the horizontal and vertical screen sizes in pixel
+Size GetDesktopResolution()
+{
+    RECT desktop;
+    // Get a handle to the desktop window
+    const HWND hDesktop = GetDesktopWindow();
+    // Get the size of screen to the variable desktop
+    GetWindowRect(hDesktop, &desktop);
+    // The top left corner will have coordinates (0,0)
+    // and the bottom right corner will have coordinates
+    // (horizontal, vertical)
+    Size size;
+    size.width = desktop.right;
+    size.height = desktop.bottom;
+    return size;
+}
 
+void SetFullscreenImpl(HWND hwnd_, bool fullscreen, bool for_metro) {
     fullscreen_ = fullscreen;
 
     if (fullscreen_) {
-        // Set new window style and size.
-        SetWindowLong(hwnd_, GWL_STYLE, style & ~(WS_CAPTION | WS_THICKFRAME));
-        SetWindowLong(hwnd_, GWL_EXSTYLE, ex_style & ~(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE));
-
-        // On expand, if we're given a window_rect, grow to it, otherwise do
-        // not resize.
-        if (!for_metro) {
-            MONITORINFO monitor_info;
-            monitor_info.cbSize = sizeof(monitor_info);
-            GetMonitorInfo(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST),
-                &monitor_info);
-            RECT window_rect(monitor_info.rcMonitor);
-            SetWindowPos(hwnd_, NULL, 0, 0, 2560, 1080,
-                SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-        }
+        ShowWindow(hwnd_, SW_MAXIMIZE);
     }
     else {
-        // Reset original window style and size.  The multiple window size/moves
-        // here are ugly, but if SetWindowPos() doesn't redraw, the taskbar won't be
-        // repainted.  Better-looking methods welcome.
-        SetWindowLong(hwnd_, GWL_STYLE, style);
-        SetWindowLong(hwnd_, GWL_EXSTYLE, ex_style);
-
-        if (!for_metro) {
-            // On restore, resize to the previous saved rect size.
-            RECT new_rect(window_rect);
-            SetWindowPos(hwnd_, NULL, windowPos.x, windowPos.y, windowSize.width, windowSize.height,
-                SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-        }
-        if (maximized)
-            ::SendMessage(hwnd_, WM_SYSCOMMAND, SC_MAXIMIZE, 0);
+        ShowWindow(hwnd_, SW_RESTORE);
     }
+}
+
+bool taskBarHovering = false;
+bool done = false;
+bool toggleFullscreen = false;
+
+constexpr auto titlebar = IM_COL32(21, 21, 21, 255);
+constexpr auto text = IM_COL32(192, 192, 192, 255);
+constexpr auto textDarker = IM_COL32(128, 128, 128, 255);
+
+inline ImU32 ColorWithMultipliedValue(const ImColor& color, float multiplier)
+{
+    const ImVec4& colRow = color.Value;
+    float hue, sat, val;
+    ImGui::ColorConvertRGBtoHSV(colRow.x, colRow.y, colRow.z, hue, sat, val);
+    return ImColor::HSV(hue, sat, min(val * multiplier, 1.0f));
+}
+
+ImRect RectOffset(const ImRect& rect, float x, float y)
+{
+    ImRect result = rect;
+    result.Min.x += x;
+    result.Min.y += y;
+    result.Max.x += x;
+    result.Max.y += y;
+    return result;
+}
+
+bool BeginMenubar(const ImRect& barRectangle)
+{
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems)
+        return false;
+    /*if (!(window->Flags & ImGuiWindowFlags_MenuBar))
+        return false;*/
+
+    IM_ASSERT(!window->DC.MenuBarAppending);
+    ImGui::BeginGroup(); // Backup position on layer 0 // FIXME: Misleading to use a group for that backup/restore
+    ImGui::PushID("##menubar");
+
+    const ImVec2 padding = window->WindowPadding;
+
+    // We don't clip with current window clipping rectangle as it is already set to the area below. However we clip with window full rect.
+    // We remove 1 worth of rounding to Max.x to that text in long menus and small windows don't tend to display over the lower-right rounded area, which looks particularly glitchy.
+    ImRect bar_rect = RectOffset(barRectangle, 0.0f, padding.y);// window->MenuBarRect();
+    ImRect clip_rect(IM_ROUND(ImMax(window->Pos.x, bar_rect.Min.x + window->WindowBorderSize + window->Pos.x - 10.0f)), IM_ROUND(bar_rect.Min.y + window->WindowBorderSize + window->Pos.y),
+        IM_ROUND(ImMax(bar_rect.Min.x + window->Pos.x, bar_rect.Max.x - ImMax(window->WindowRounding, window->WindowBorderSize))), IM_ROUND(bar_rect.Max.y + window->Pos.y));
+
+    clip_rect.ClipWith(window->OuterRectClipped);
+    ImGui::PushClipRect(clip_rect.Min, clip_rect.Max, false);
+
+    // We overwrite CursorMaxPos because BeginGroup sets it to CursorPos (essentially the .EmitItem hack in EndMenuBar() would need something analogous here, maybe a BeginGroupEx() with flags).
+    window->DC.CursorPos = window->DC.CursorMaxPos = ImVec2(bar_rect.Min.x + window->Pos.x, bar_rect.Min.y + window->Pos.y);
+    window->DC.LayoutType = ImGuiLayoutType_Horizontal;
+    window->DC.NavLayerCurrent = ImGuiNavLayer_Menu;
+    window->DC.MenuBarAppending = true;
+    ImGui::AlignTextToFramePadding();
+    return true;
+}
+
+void EndMenubar()
+{
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (window->SkipItems)
+        return;
+    ImGuiContext& g = *GImGui;
+
+    // Nav: When a move request within one of our child menu failed, capture the request to navigate among our siblings.
+    if (ImGui::NavMoveRequestButNoResultYet() && (g.NavMoveDir == ImGuiDir_Left || g.NavMoveDir == ImGuiDir_Right) && (g.NavWindow->Flags & ImGuiWindowFlags_ChildMenu))
+    {
+        // Try to find out if the request is for one of our child menu
+        ImGuiWindow* nav_earliest_child = g.NavWindow;
+        while (nav_earliest_child->ParentWindow && (nav_earliest_child->ParentWindow->Flags & ImGuiWindowFlags_ChildMenu))
+            nav_earliest_child = nav_earliest_child->ParentWindow;
+        if (nav_earliest_child->ParentWindow == window && nav_earliest_child->DC.ParentLayoutType == ImGuiLayoutType_Horizontal && (g.NavMoveFlags & ImGuiNavMoveFlags_Forwarded) == 0)
+        {
+            // To do so we claim focus back, restore NavId and then process the movement request for yet another frame.
+            // This involve a one-frame delay which isn't very problematic in this situation. We could remove it by scoring in advance for multiple window (probably not worth bothering)
+            const ImGuiNavLayer layer = ImGuiNavLayer_Menu;
+            IM_ASSERT(window->DC.NavLayersActiveMaskNext & (1 << layer)); // Sanity check
+            ImGui::FocusWindow(window);
+            ImGui::SetNavID(window->NavLastIds[layer], layer, 0, window->NavRectRel[layer]);
+            g.NavDisableHighlight = true; // Hide highlight for the current frame so we don't see the intermediary selection.
+            g.NavDisableMouseHover = g.NavMousePosDirty = true;
+            ImGui::NavMoveRequestForward(g.NavMoveDir, g.NavMoveClipDir, g.NavMoveFlags, g.NavMoveScrollFlags); // Repeat
+        }
+    }
+
+    IM_MSVC_WARNING_SUPPRESS(6011); // Static Analysis false positive "warning C6011: Dereferencing NULL pointer 'window'"
+    // IM_ASSERT(window->Flags & ImGuiWindowFlags_MenuBar); // NOTE(Yan): Needs to be commented out because Jay
+    IM_ASSERT(window->DC.MenuBarAppending);
+    ImGui::PopClipRect();
+    ImGui::PopID();
+    window->DC.MenuBarOffset.x = window->DC.CursorPos.x - window->Pos.x; // Save horizontal position so next append can reuse it. This is kinda equivalent to a per-layer CursorPos.
+    g.GroupStack.back().EmitItem = false;
+    ImGui::EndGroup(); // Restore position on layer 0
+    window->DC.LayoutType = ImGuiLayoutType_Vertical;
+    window->DC.NavLayerCurrent = ImGuiNavLayer_Main;
+    window->DC.MenuBarAppending = false;
+}
+
+void drawTitleBar(float& titlebarHeight_)
+{
+    const float titlebarHeight = 58.0f;
+    const bool isMaximized = fullscreen_;
+    float titlebarVerticalOffset = isMaximized ? -6.0f : 0.0f;
+    const ImVec2 windowPadding = ImGui::GetCurrentWindow()->WindowPadding;
+
+    ImGui::SetCursorPos(ImVec2(windowPadding.x, windowPadding.y + titlebarVerticalOffset));
+    const ImVec2 titlebarMin = ImGui::GetCursorScreenPos();
+    const ImVec2 titlebarMax = { ImGui::GetCursorScreenPos().x + ImGui::GetWindowWidth() - windowPadding.y * 2.0f,
+                                 ImGui::GetCursorScreenPos().y + titlebarHeight };
+    auto* bgDrawList = ImGui::GetBackgroundDrawList();
+    auto* fgDrawList = ImGui::GetForegroundDrawList();
+    bgDrawList->AddRectFilled(titlebarMin, titlebarMax, titlebar);
+    // DEBUG TITLEBAR BOUNDS
+    // fgDrawList->AddRect(titlebarMin, titlebarMax, UI::Colors::Theme::invalidPrefab);
+
+    // Logo
+    {
+        const int logoWidth = 48;// m_LogoTex->GetWidth();
+        const int logoHeight = 48;// m_LogoTex->GetHeight();
+        const ImVec2 logoOffset(16.0f + windowPadding.x, 5.0f + windowPadding.y + titlebarVerticalOffset);
+        const ImVec2 logoRectStart = { ImGui::GetItemRectMin().x + logoOffset.x, ImGui::GetItemRectMin().y + logoOffset.y };
+        const ImVec2 logoRectMax = { logoRectStart.x + logoWidth, logoRectStart.y + logoHeight };
+        //fgDrawList->AddImage(m_AppHeaderIcon->GetDescriptorSet(), logoRectStart, logoRectMax);
+    }
+
+    ImGui::BeginHorizontal("Titlebar", { ImGui::GetWindowWidth() - windowPadding.y * 2.0f, ImGui::GetFrameHeightWithSpacing() });
+
+    static float moveOffsetX;
+    static float moveOffsetY;
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float buttonsAreaWidth = 94;
+
+    // Title bar drag area
+    // On Windows we hook into the GLFW win32 window internals
+    ImGui::SetCursorPos(ImVec2(windowPadding.x, windowPadding.y + titlebarVerticalOffset)); // Reset cursor pos
+    // DEBUG DRAG BOUNDS
+    // fgDrawList->AddRect(ImGui::GetCursorScreenPos(), ImVec2(ImGui::GetCursorScreenPos().x + w - buttonsAreaWidth, ImGui::GetCursorScreenPos().y + titlebarHeight), UI::Colors::Theme::invalidPrefab);
+    ImGui::InvisibleButton("##titleBarDragZone", ImVec2(w - buttonsAreaWidth, titlebarHeight));
+
+    taskBarHovering = ImGui::IsItemHovered();
+
+    if (isMaximized)
+    {
+        float windowMousePosY = ImGui::GetMousePos().y - ImGui::GetCursorScreenPos().y;
+        if (windowMousePosY >= 0.0f && windowMousePosY <= 5.0f)
+            taskBarHovering = true; // Account for the top-most pixels which don't register
+    }
+
+    // Draw Menubar
+    //if (m_MenubarCallback)
+    {
+        ImGui::SuspendLayout();
+        {
+            ImGui::SetItemAllowOverlap();
+            const float logoHorizontalOffset = 4 + windowPadding.x;
+            ImGui::SetCursorPos(ImVec2(logoHorizontalOffset, 6.0f + titlebarVerticalOffset));
+
+            const ImRect menuBarRect = { ImGui::GetCursorPos(), { ImGui::GetContentRegionAvail().x + ImGui::GetCursorScreenPos().x, ImGui::GetFrameHeightWithSpacing() } };
+
+            ImGui::BeginGroup();
+            if (BeginMenubar(menuBarRect))
+            {
+                if (ImGui::BeginMenu("File"))
+                {
+                    if (ImGui::MenuItem("Quit"))
+                    {
+                    }
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("Help"))
+                {
+                    if (ImGui::MenuItem("About"))
+                    {
+                    }
+                    ImGui::EndMenu();
+                }
+            }
+            EndMenubar();
+            ImGui::EndGroup();
+
+            if (ImGui::IsItemHovered())
+                taskBarHovering = false;
+        }
+
+        ImGui::ResumeLayout();
+    }
+
+    {
+        // Centered Window title
+        std::string projectName("Project Name");
+        ImVec2 currentCursorPos = ImGui::GetCursorPos();
+        ImVec2 textSize = ImGui::CalcTextSize(projectName.c_str());
+        ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() * 0.5f - textSize.x * 0.5f, 2.0f + windowPadding.y + 6.0f));
+        ImGui::Text("%s", projectName.c_str()); // Draw title
+        ImGui::SetCursorPos(currentCursorPos);
+    }
+
+    // Window buttons
+    const ImU32 buttonColN = ColorWithMultipliedValue(text, 0.9f);
+    const ImU32 buttonColH = ColorWithMultipliedValue(text, 1.2f);
+    const ImU32 buttonColP = textDarker;
+    const float buttonWidth = 14.0f;
+    const float buttonHeight = 14.0f;
+
+    // Minimize Button
+    int iconSize = 10;
+
+    ImGui::Spring();
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f);
+    {
+        const int iconWidth = iconSize;
+        const int iconHeight = iconSize;
+        const float padY = (buttonHeight - (float)iconHeight) / 2.0f;
+        if (ImGui::InvisibleButton("Minimize", ImVec2(buttonWidth, buttonHeight)))
+        {
+            //Minimize
+        }
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() - buttonWidth);
+        ImGui::Text(".");
+        //UI::DrawButtonImage(m_IconMinimize, buttonColN, buttonColH, buttonColP, UI::RectExpanded(UI::GetItemRect(), 0.0f, -padY));
+    }
+
+
+    // Maximize Button
+    ImGui::Spring(-1.0f, 17.0f);
+    // ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f);
+    {
+        const int iconWidth = iconSize;
+        const int iconHeight = iconSize;
+
+        const bool isMaximized = fullscreen_;
+
+        if (ImGui::InvisibleButton("Maximize", ImVec2(buttonWidth, buttonHeight)))
+        {
+            // Toggle full screen
+            fullscreen_ = !fullscreen_;
+        }
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() - buttonWidth);
+        ImGui::Text("o");
+        //UI::DrawButtonImage(isMaximized ? m_IconRestore : m_IconMaximize, buttonColN, buttonColH, buttonColP);
+    }
+
+    // Close Button
+    ImGui::Spring(-1.0f, 15.0f);
+    // ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f);
+    {
+        const int iconWidth = iconSize;
+        const int iconHeight = iconSize;
+        if (ImGui::InvisibleButton("Close", ImVec2(buttonWidth, buttonHeight)))
+            done = true;
+
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() - buttonWidth);
+        ImGui::Text("x");
+        //UI::DrawButtonImage(m_IconClose, UI::Colors::Theme::text, UI::Colors::ColorWithMultipliedValue(UI::Colors::Theme::text, 1.4f), buttonColP);
+    }
+
+    ImGui::Spring(-1.0f, 18.0f);
+    ImGui::EndHorizontal();
+
+    titlebarHeight_ = titlebarHeight;
 }
 
 // Main code
 int main(int, char**)
 {
-
-    // Create application window
-    //ImGui_ImplWin32_EnableDpiAwareness();
+    ImGui_ImplWin32_EnableDpiAwareness();
     WNDCLASSEXW wc = { sizeof(wc), CS_CLASSDC, WndProc, 0L, 0L, GetModuleHandle(nullptr), nullptr, nullptr, nullptr, nullptr, L"ImGui Example", nullptr };
     ::RegisterClassExW(&wc);
     HWND hwnd = ::CreateWindowW(wc.lpszClassName, L"Dear ImGui DirectX9 Example", windowStyle, windowPos.x, windowPos.y, windowSize.width, windowSize.height, nullptr, nullptr, wc.hInstance, nullptr);
@@ -146,30 +389,13 @@ int main(int, char**)
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX9_Init(g_pd3dDevice);
 
-    // Load Fonts
-    // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
-    // - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple.
-    // - If the file cannot be loaded, the function will return a nullptr. Please handle those errors in your application (e.g. use an assertion, or display an error and quit).
-    // - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
-    // - Use '#define IMGUI_ENABLE_FREETYPE' in your imconfig file to use Freetype for higher quality font rendering.
-    // - Read 'docs/FONTS.md' for more instructions and details.
-    // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
-    //io.Fonts->AddFontDefault();
-    //io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\segoeui.ttf", 18.0f);
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Roboto-Medium.ttf", 16.0f);
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
-    //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, nullptr, io.Fonts->GetGlyphRangesJapanese());
-    //IM_ASSERT(font != nullptr);
-
     // Our state
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     // Main loop
-    bool done = false;
-    bool taskBarHovering = false;
     while (!done)
     {
+        toggleFullscreen = false;
         // Poll and handle messages (inputs, window resize, etc.)
         // See the WndProc() function below for our to dispatch events to the Win32 backend.
         MSG msg;
@@ -187,66 +413,22 @@ int main(int, char**)
         ImGui_ImplDX9_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
-        bool toggleFullscreen = false;
 
         {
-            static ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
-
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 8));
-            if (ImGui::BeginMainMenuBar())
-            {
-                ImGui::Text("Engine  ");
-
-                if (ImGui::BeginMenu("File"))
-                {
-                    ImGui::MenuItem("New");
-                    ImGui::MenuItem("Open");
-                    ImGui::MenuItem("Save");
-                    ImGui::MenuItem("Save As...");
-                    ImGui::Separator();
-                    if (ImGui::MenuItem("Quit"))
-                        done = true;
-                    ImGui::EndMenu();
-                }
-
-                if (ImGui::BeginMenu("Help"))
-                {
-                    ImGui::EndMenu();
-                }
-
-                auto size = ImGui::GetContentRegionMax();
-                size.x = size.x - 55;
-                size.y = 0;
-                ImGui::SetCursorPos(size);
-                if (ImGui::Button("O", { 30, 30 }))
-                {
-                    toggleFullscreen = true;
-                }
-                size.x += 32;
-                ImGui::SetCursorPos(size);
-                if (ImGui::Button("X", { 30, 30 }))
-                {
-                    done = true;
-                }
-                if (ImGui::IsWindowHovered())
-                {
-                    taskBarHovering = true;
-                }
-                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && taskBarHovering)
-                    toggleFullscreen = true;
-                ImGui::EndMainMenuBar();
-            }
-
-            ImGui::PopStyleVar();
-
+            ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoDocking;
+            window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
+            window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
             const ImGuiViewport* viewport = ImGui::GetMainViewport();
             ImGui::SetNextWindowPos(viewport->WorkPos);
             ImGui::SetNextWindowSize(viewport->WorkSize);
-
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-            ImGui::Begin("Main", 0, flags | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoBringToFrontOnFocus);
-            ImGui::PopStyleVar();
-            ImGui::DockSpace(ImGui::GetID("Dock"), viewport->WorkSize);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, fullscreen_ ? ImVec2(6.0f, 6.0f) : ImVec2(1.0f, 1.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+            ImGui::Begin("Main", 0, window_flags);
+            float titleBarHeight = 58;
+            ImGui::PopStyleVar(3);
+            drawTitleBar(titleBarHeight);
+            ImGui::DockSpace(ImGui::GetID("Dock"));
             ImGui::ShowDemoWindow();
             ImGui::End();
         }
@@ -278,24 +460,6 @@ int main(int, char**)
         if (toggleFullscreen)
             SetFullscreenImpl(hwnd, !fullscreen_, false);
 
-        if (taskBarHovering && ImGui::IsMouseDragging(ImGuiMouseButton_::ImGuiMouseButton_Left))
-        {
-            auto delta = ImGui::GetMouseDragDelta();
-            ImGui::ResetMouseDragDelta();
-
-            windowPos.x += delta.x;
-            windowPos.y += delta.y;
-
-            RECT rect = { (LONG)windowPos.x, (LONG)windowPos.y, (LONG)windowPos.x, (LONG)windowPos.y };
-            ::AdjustWindowRectEx(&rect, windowStyle, FALSE, 0);
-            ::SetWindowPos(hwnd, nullptr, rect.left, rect.top, 0, 0, SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
-
-        if (taskBarHovering)
-        {
-            if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
-                taskBarHovering = false;
-        }
 
         // Handle loss of D3D9 device
         if (result == D3DERR_DEVICELOST && g_pd3dDevice->TestCooperativeLevel() == D3DERR_DEVICENOTRESET)
@@ -368,6 +532,22 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
     switch (msg)
     {
+    case WM_CREATE:
+    {
+        RECT size_rect;
+        GetWindowRect(hWnd, &size_rect);
+
+        // Inform the application of the frame change to force redrawing with the new
+        // client area that is extended into the title bar
+        SetWindowPos(
+            hWnd, NULL,
+            size_rect.left, size_rect.top,
+            size_rect.right - size_rect.left, size_rect.bottom - size_rect.top,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE
+        );
+
+        break;
+    }
     case WM_SIZE:
         if (g_pd3dDevice != nullptr && wParam != SIZE_MINIMIZED)
         {
@@ -392,6 +572,87 @@ LRESULT WINAPI WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             ::SetWindowPos(hWnd, nullptr, suggested_rect->left, suggested_rect->top, suggested_rect->right - suggested_rect->left, suggested_rect->bottom - suggested_rect->top, SWP_NOZORDER | SWP_NOACTIVATE);
         }
         break;
+    case WM_NCHITTEST:
+    {
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ScreenToClient(hWnd, &pt);
+
+        // Check borders first
+        //if (!window->win32.maximized)
+        {
+            RECT rc;
+            GetClientRect(hWnd, &rc);
+
+            const int verticalBorderSize = GetSystemMetrics(SM_CYFRAME);
+
+            struct Border
+            {
+                int left = 4;
+                int right = 4;
+                int top = 4;
+                int bottom = 4;
+            }border_thickness;
+
+            enum { left = 1, top = 2, right = 4, bottom = 8 };
+            int hit = 0;
+            if (pt.x <= border_thickness.left)
+                hit |= left;
+            if (pt.x >= rc.right - border_thickness.right)
+                hit |= right;
+            if (pt.y <= border_thickness.top || pt.y < verticalBorderSize)
+                hit |= top;
+            if (pt.y >= rc.bottom - border_thickness.bottom)
+                hit |= bottom;
+
+            if (hit & top && hit & left)        return HTTOPLEFT;
+            if (hit & top && hit & right)       return HTTOPRIGHT;
+            if (hit & bottom && hit & left)     return HTBOTTOMLEFT;
+            if (hit & bottom && hit & right)    return HTBOTTOMRIGHT;
+            if (hit & left)                     return HTLEFT;
+            if (hit & top)                      return HTTOP;
+            if (hit & right)                    return HTRIGHT;
+            if (hit & bottom)                   return HTBOTTOM;
+        }
+
+        if (taskBarHovering)
+            return HTCAPTION;
+
+        // In client area
+        return HTCLIENT;
+    }
+    case WM_NCCALCSIZE:
+        if (wParam)
+        {
+            /* Detect whether window is maximized or not. We don't need to change the resize border when win is
+            *  maximized because all resize borders are gone automatically */
+            WINDOWPLACEMENT wPos;
+            // GetWindowPlacement fail if this member is not set correctly.
+            wPos.length = sizeof(wPos);
+            GetWindowPlacement(hWnd, &wPos);
+            const int resizeBorderX = GetSystemMetrics(SM_CXFRAME);
+            const int resizeBorderY = GetSystemMetrics(SM_CYFRAME);
+
+            NCCALCSIZE_PARAMS* params = (NCCALCSIZE_PARAMS*)lParam;
+            RECT* requestedClientRect = params->rgrc;
+
+            requestedClientRect->right -= resizeBorderX;
+            requestedClientRect->left += resizeBorderX;
+            requestedClientRect->bottom -= resizeBorderY;
+            requestedClientRect->top += 0;
+
+            return WVR_ALIGNTOP | WVR_ALIGNLEFT;
+
+            //RECT borderThickness;
+            //SetRectEmpty(&borderThickness);
+            //AdjustWindowRectEx(&borderThickness,
+            //    GetWindowLongPtr(hwnd, GWL_STYLE) & ~WS_CAPTION, FALSE, NULL);
+            //borderThickness.left *= -1;
+            //borderThickness.top *= -1;
+            //NCCALCSIZE_PARAMS* sz = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
+            //// Add 1 pixel to the top border to make the window resizable from the top border
+            //sz->rgrc[0].top -= borderThickness.top;
+            //return 0;
+        }break;
     }
     return ::DefWindowProcW(hWnd, msg, wParam, lParam);
 }
