@@ -246,6 +246,7 @@ void drawTitleBar(float& titlebarHeight_)
                 {
                     if (ImGui::MenuItem("Quit"))
                     {
+                        done = true;
                     }
                     ImGui::EndMenu();
                 }
